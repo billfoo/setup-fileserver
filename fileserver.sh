@@ -14,28 +14,30 @@ NC='\033[0m'
 
 # Funktion zum sauberen Löschen der Firewall-Regeln
 cleanup_ufw() {
+    # Wir löschen die exakte IP aus der Config (vermeidet Parsing-Fehler)
     if [ -f "$CONFIG_FILE" ]; then
         source "$CONFIG_FILE"
         if [ -n "$ALLOWED_IP" ]; then
             ufw delete allow from $ALLOWED_IP to any port $PORT proto tcp > /dev/null 2>&1
         fi
     fi
+    # Pauschale Öffnung zur Sicherheit auch löschen
     ufw delete allow $PORT/tcp > /dev/null 2>&1
 }
 
-# Funktion zum Aufspüren und Zerstören von Geister-Containern auf unserem Port
-cleanup_ghost_containers() {
-    BLOCKING_CID=$(docker ps -a -q --filter "publish=${PORT}")
-    if [ -n "$BLOCKING_CID" ]; then
-        for cid in $BLOCKING_CID; do
-            NAME=$(docker inspect --format '{{.Name}}' $cid | sed 's/\///')
-            if [ "$NAME" != "$CONTAINER_NAME" ]; then
-                echo -e "${YELLOW}Entferne alten/blockierenden Container ('$NAME') auf Port $PORT...${NC}"
-                docker rm -f $cid > /dev/null 2>&1
-            fi
-        done
-    fi
-}
+# ---------------------------------------------------------
+# 0. GEISTER-CONTAINER AUF PORT 8080 FINDEN & ZERSTÖREN
+# ---------------------------------------------------------
+BLOCKING_CID=$(docker ps -q --filter "publish=${PORT}")
+if [ -n "$BLOCKING_CID" ]; then
+    for cid in $BLOCKING_CID; do
+        NAME=$(docker inspect --format '{{.Name}}' $cid | sed 's/\///')
+        if [ "$NAME" != "$CONTAINER_NAME" ]; then
+            echo -e "${YELLOW}Achtung: Ein alter Container ('$NAME') blockiert Port $PORT. Wird entfernt...${NC}"
+            docker rm -f $cid > /dev/null
+        fi
+    done
+fi
 
 # ---------------------------------------------------------
 # 1. PRÜFEN OB UNSER CONTAINER BEREITS EXISTIERT
@@ -44,8 +46,8 @@ if docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
     echo -e "${YELLOW}Der Container '${CONTAINER_NAME}' existiert bereits.${NC}"
     echo "Was möchtest du tun?"
     echo "1) Installation abbrechen"
-    echo "2) Container neu installieren/konfigurieren (Dateien bleiben erhalten)"
-    echo "3) Komplett entfernen (Container, Geister-Container, Config, Firewall & Dateien löschen)"
+    echo "2) Container neu installieren/konfigurieren (Ihre Dateien bleiben erhalten!)"
+    echo "3) Komplett entfernen (Container, Config, Firewall & alle Dateien im Ordner löschen)"
     read -p "Wähle eine Option (1/2/3): " choice < /dev/tty
 
     case $choice in
@@ -55,18 +57,12 @@ if docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
             ;;
         2)
             echo "Lösche alten Container..."
-            docker rm -f $CONTAINER_NAME > /dev/null 2>&1
-            cleanup_ghost_containers
+            docker rm -f $CONTAINER_NAME > /dev/null
             cleanup_ufw
             ;;
         3)
-            echo "Entferne Haupt-Container..."
-            docker rm -f $CONTAINER_NAME > /dev/null 2>&1
-            
-            echo "Suche und entferne restliche Geister-Container auf Port $PORT..."
-            cleanup_ghost_containers
-            
-            echo "Bereinige Firewall-Regeln..."
+            echo "Entferne Container..."
+            docker rm -f $CONTAINER_NAME > /dev/null
             cleanup_ufw
             
             read -p "Soll der Ordner $DATA_DIR mit ALLEN Dateien wirklich gelöscht werden? (y/n): " del_dir < /dev/tty
@@ -77,9 +73,7 @@ if docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
                 echo "Verzeichnis $DATA_DIR bleibt erhalten."
             fi
             
-            echo "Lösche Konfigurationsdatei..."
             rm -f $CONFIG_FILE
-            
             echo -e "${GREEN}Deinstallation komplett abgeschlossen.${NC}"
             exit 0
             ;;
@@ -91,9 +85,6 @@ if docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
 fi
 
 echo -e "\n${GREEN}=== Starte Installation / Konfiguration ===${NC}"
-
-# Blockierende Container vor Neustart immer aufräumen
-cleanup_ghost_containers
 
 # ---------------------------------------------------------
 # 2. FIREWALL PARAMETER ABFRAGEN
