@@ -14,19 +14,16 @@ NC='\033[0m'
 
 # Funktion zum sauberen Löschen der Firewall-Regeln (UFW & Docker-Iptables)
 cleanup_firewall() {
-    # 1. UFW bereinigen
+    # 1. UFW & Docker bereinigen
     if [ -f "$CONFIG_FILE" ]; then
         source "$CONFIG_FILE"
         if [ -n "$ALLOWED_IP" ]; then
             ufw delete allow from $ALLOWED_IP to any port $PORT proto tcp > /dev/null 2>&1
-            # Docker iptables ACCEPT Regel löschen
-            iptables -D DOCKER-USER -p tcp --dport $PORT -s $ALLOWED_IP -j ACCEPT > /dev/null 2>&1
+            # Docker iptables conntrack Regel löschen (sicheres Löschen ohne Fehler)
+            iptables -D DOCKER-USER -p tcp -m conntrack --ctorigdstport $PORT ! -s $ALLOWED_IP -j DROP > /dev/null 2>&1
         fi
     fi
     ufw delete allow $PORT/tcp > /dev/null 2>&1
-    
-    # Docker iptables DROP Regel löschen
-    iptables -D DOCKER-USER -p tcp --dport $PORT -j DROP > /dev/null 2>&1
 }
 
 # Funktion zum Aufspüren und Zerstören von Geister-Containern
@@ -151,9 +148,10 @@ if [ "$FIREWALL_MODE" == "open" ]; then
 else
     # 1. UFW für den Host setzen
     ufw allow from $ALLOWED_IP to any port $PORT proto tcp > /dev/null
-    # 2. Docker zwingen, alle fremden IPs zu droppen (Der ultimative Fix!)
-    iptables -I DOCKER-USER 1 -p tcp --dport $PORT -j DROP
-    iptables -I DOCKER-USER 1 -p tcp --dport $PORT -s $ALLOWED_IP -j ACCEPT
+    
+    # 2. DOCKER FIX: Den ursprünglichen (nicht-übersetzten) Port überprüfen!
+    # Wenn der original aufgerufene Port 8080 ist UND die IP NICHT unsere Erlaubte IP ist -> BLOCKIEREN
+    iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctorigdstport $PORT ! -s $ALLOWED_IP -j DROP
     
     echo -e "-> ${GREEN}Port $PORT wurde exklusiv für die IP $ALLOWED_IP auf tiefster Ebene geöffnet.${NC}"
 fi
