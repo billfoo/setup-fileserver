@@ -3,6 +3,7 @@
 CONTAINER_NAME="secure-php-server"
 PORT="8080"
 DATA_DIR="/opt/public-files"
+CONFIG_FILE="/opt/secure-server-firewall.conf"
 
 # Farben für das Terminal
 RED='\033[0;31m'
@@ -11,12 +12,18 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Funktion zum sauberen Löschen aller Firewall-Regeln für diesen Port
+# Funktion zum Bereinigen der alten Firewall-Regeln
 cleanup_ufw() {
-    # Sucht alle UFW-Regelnummern für den Port und löscht sie absteigend (um Verschiebungen zu vermeiden)
-    for rule in $(ufw status numbered | grep -E "\b${PORT}(/tcp)?\b" | awk -F"[][]" '{print $2}' | tr -d ' ' | sort -rn); do
-        yes | ufw delete $rule > /dev/null 2>&1
-    done
+    # Lösche pauschale Öffnung (falls vorhanden)
+    ufw delete allow $PORT/tcp > /dev/null 2>&1
+    
+    # Lösche spezifische IP-Öffnung (falls in Config gespeichert)
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+        if [ "$FIREWALL_MODE" == "restricted" ] && [ -n "$ALLOWED_IP" ]; then
+            ufw delete allow from $ALLOWED_IP to any port $PORT proto tcp > /dev/null 2>&1
+        fi
+    fi
 }
 
 # ---------------------------------------------------------
@@ -27,7 +34,7 @@ if docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
     echo "Was möchtest du tun?"
     echo "1) Installation abbrechen"
     echo "2) Container löschen und neu installieren/konfigurieren"
-    echo "3) Komplett entfernen (Container & Firewall-Regeln löschen)"
+    echo "3) Komplett entfernen (Container, Config & Firewall-Regeln löschen)"
     read -p "Wähle eine Option (1/2/3): " choice < /dev/tty
 
     case $choice in
@@ -37,11 +44,11 @@ if docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
             ;;
         2)
             echo "Lösche alten Container..."
-            docker rm -f $CONTAINER_NAME > /dev/null
+            docker rm -f $CONTAINER_NAME
             ;;
         3)
             echo "Entferne Container..."
-            docker rm -f $CONTAINER_NAME > /dev/null
+            docker rm -f $CONTAINER_NAME
             echo "Bereinige Firewall-Regeln..."
             cleanup_ufw
             
@@ -52,6 +59,9 @@ if docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
             else
                 echo "Verzeichnis $DATA_DIR bleibt erhalten."
             fi
+            
+            echo "Lösche Konfigurationsdatei..."
+            rm -f $CONFIG_FILE
             
             echo -e "${GREEN}Deinstallation komplett abgeschlossen.${NC}"
             exit 0
@@ -66,44 +76,30 @@ fi
 echo -e "\n${GREEN}=== Starte Installation / Konfiguration ===${NC}"
 
 # ---------------------------------------------------------
-# 2. FIREWALL STATUS DIREKT AUS UFW AUSLESEN
+# 2. FIREWALL PARAMETER ABFRAGEN (INTERAKTIV)
 # ---------------------------------------------------------
-FIREWALL_MODE="unknown"
-DETECTED_IP=""
 ASK_CONFIG=true
 
-# Aktuelle Regel für den Port aus der Firewall holen
-CURRENT_RULE=$(ufw status | awk -v port="$PORT" '$1 == port || $1 == port"/tcp" {print $0}' | head -n 1)
-
-if [[ -n "$CURRENT_RULE" ]]; then
-    if [[ "$CURRENT_RULE" == *"Anywhere"* ]]; then
-        FIREWALL_MODE="open"
-    else
-        FIREWALL_MODE="restricted"
-        # Die IP ist das letzte Wort in der UFW Ausgabe
-        DETECTED_IP=$(echo "$CURRENT_RULE" | awk '{print $NF}')
-    fi
-
-    echo -e "\n${CYAN}Bestehende Firewall-Konfiguration erkannt:${NC}"
+# Wenn bereits eine Config existiert, frage ob sie behalten werden soll
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+    echo -e "\n${CYAN}Bestehende Firewall-Konfiguration gefunden:${NC}"
     if [ "$FIREWALL_MODE" == "open" ]; then
         echo -e "-> Der Port $PORT ist aktuell ${RED}OFFEN FÜR ALLE${NC}."
     else
-        echo -e "-> Der Port $PORT ist aktuell ${GREEN}BESCHRÄNKT auf die IP: $DETECTED_IP${NC}."
+        echo -e "-> Der Port $PORT ist aktuell ${GREEN}BESCHRÄNKT auf die IP: $ALLOWED_IP${NC}."
     fi
     
     read -p "Möchtest du diese Parameter beibehalten? (y = Behalten / n = Ändern): " keep_config < /dev/tty
     if [[ "$keep_config" =~ ^[Yy]$ ]]; then
         ASK_CONFIG=false
-        ALLOWED_IP="$DETECTED_IP"
     else
         echo "Lösche alte Firewall-Regeln vor der Neukonfiguration..."
         cleanup_ufw
     fi
 fi
 
-# ---------------------------------------------------------
-# 3. FIREWALL PARAMETER ABFRAGEN (FALLS GEWÜNSCHT/NEU)
-# ---------------------------------------------------------
+# Wenn keine Config existiert ODER der Nutzer sie ändern will
 if [ "$ASK_CONFIG" = true ]; then
     echo -e "\n${CYAN}Wie soll die Firewall für den Server konfiguriert werden?${NC}"
     echo "1) Offen für alle (Nicht empfohlen für interne Skripte/APIs)"
@@ -117,7 +113,7 @@ if [ "$ASK_CONFIG" = true ]; then
         FIREWALL_MODE="restricted"
         read -p "Bitte gib die erlaubte IP-Adresse ein: " ALLOWED_IP < /dev/tty
         
-        # Kurze Plausibilitätsprüfung
+        # Kurze Plausibilitätsprüfung für die IP
         if [[ ! $ALLOWED_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo -e "${YELLOW}Warnung: Das Format der IP ($ALLOWED_IP) sieht ungewöhnlich aus, wird aber übernommen.${NC}"
         fi
@@ -125,10 +121,14 @@ if [ "$ASK_CONFIG" = true ]; then
         echo -e "${RED}Ungültige Eingabe. Abbruch.${NC}"
         exit 1
     fi
+    
+    # Speichere die neue Config
+    echo "FIREWALL_MODE=\"$FIREWALL_MODE\"" > "$CONFIG_FILE"
+    echo "ALLOWED_IP=\"$ALLOWED_IP\"" >> "$CONFIG_FILE"
 fi
 
 # ---------------------------------------------------------
-# 4. VERZEICHNISSE & UFW & CONTAINER STARTEN
+# 3. VERZEICHNISSE & UFW & CONTAINER STARTEN
 # ---------------------------------------------------------
 echo -e "\n[1/3] Erstelle Verzeichnis ($DATA_DIR)..."
 mkdir -p $DATA_DIR
