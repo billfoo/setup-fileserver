@@ -26,7 +26,7 @@ Before running the script, ensure your server meets the following requirements:
 You can download and run the script directly with a single command:
 
 ```bash
-sudo bash <(curl -sSL [https://raw.githubusercontent.com/billfoo/setup-fileserver/main/fileserver.sh](https://raw.githubusercontent.com/billfoo/setup-fileserver/main/fileserver.sh))
+bash <(curl -sSL https://raw.githubusercontent.com/billfoo/setup-fileserver/main/fileserver.sh)
 ```
 
 ### Setup Process
@@ -63,7 +63,7 @@ Select **Option 2 (Reinstall/Reconfigure)**. The script will automatically clean
 To completely remove the server and all its traces from your system, run the installation command again:
 
 ```bash
-sudo bash <(curl -sSL [https://raw.githubusercontent.com/billfoo/setup-fileserver/main/fileserver.sh](https://raw.githubusercontent.com/billfoo/setup-fileserver/main/fileserver.sh))
+bash <(curl -sSL https://raw.githubusercontent.com/billfoo/setup-fileserver/main/fileserver.sh)
 ```
 
 When prompted, select **Option 3 (Completely remove)**. The script will perform a clean wipe:
